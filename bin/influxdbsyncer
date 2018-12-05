@@ -1,0 +1,46 @@
+#!/usr/bin/env python
+
+import datetime
+import schedule
+from influxdbsyncer import *
+
+
+config = load_config()
+local = DataFrameClient(config.get('local', 'host'), int(config.get('local', 'port')), config.get('local', 'user'), config.get('local', 'pass'), config.get('local', 'db'))
+remote = DataFrameClient(config.get('remote', 'host'), int(config.get('remote', 'port')), config.get('remote', 'user'), config.get('remote', 'pass'), config.get('remote', 'db'))
+
+def sync():
+    print "Sync started at %s" % str(datetime.datetime.now())
+    local_measurements = get_measurements(local)
+    remote_measurements = get_measurements(remote)
+    sync_end_date = datetime.datetime.utcnow() - datetime.timedelta(seconds = int(config.get('general', 'skip_last')))
+    sync_start_date = sync_end_date - datetime.timedelta(seconds = int(config.get('general', 'sync_window')))
+    for remote_measurement in remote_measurements:
+        if remote_measurement in local_measurements:
+            tag_keys = get_tag_keys(client = remote, measurement = remote_measurement)
+            field_keys = get_field_keys(client = remote, measurement = remote_measurement)
+            remote_points = get_points(
+                client = remote,
+                measurement = remote_measurement,
+                start_date = sync_start_date,
+                end_date = sync_end_date
+            )
+            local_points = get_points(
+                client = local,
+                measurement = remote_measurement,
+                start_date = sync_start_date,
+                end_date = sync_end_date
+            )
+            missing_points_in_local = get_deltas(remote_points, local_points, tag_keys)
+            count_missing_points_in_local = len(missing_points_in_local.index)
+            if count_missing_points_in_local > 0:
+                print "Found %d missing points in %s" % (count_missing_points_in_local, remote_measurement)
+                write_data(local, remote_measurement, missing_points_in_local, tag_keys=tag_keys, field_keys=field_keys, batch_size=int(config.get('general', 'batch_size')))
+
+
+interval = int(config.get('general', 'every'))
+schedule.every(interval).seconds.do(sync)
+
+sync()
+while True:
+    schedule.run_pending()
